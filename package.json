@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "depromisify": "^1.0.0",
+    "jsontoxml": "^1.0.1",
+    "node-opcua": "^2.4.1",
+    "qlik-sse": "^0.3.0",
+    "require-all": "^3.0.0"
+  }
+}
