@@ -1,0 +1,163 @@
+
+LET vLocalCacheFile = 'lib://tmp/opcua-data.txt';
+LET vNow = Date(Now(),'YYYY-MM-DD hh:mm:ss');
+
+// Find a list of sandbox OPC-UA servers at
+// https://github.com/node-opcua/node-opcua/wiki/publicly-available-OPC-UA-Servers-and-Clients
+
+// Use an online OPC-UA client to connect and see the possible NodeIDs at
+// https://uaclient.com
+
+
+OPC_UA_Config: 
+//  CONFIG FOR OPC-UA SERVER AND NODEID     
+//  ▼ ▼ ▼ ▼ ▼ ▼ ▼ ▼ ▼ ▼ ▼ ▼ ▼ ▼ ▼ ▼ ▼ ▼ 
+LOAD * INLINE [%QueryOPC | %Param | %QlikFieldName | City
+	0 | opc.tcp://opcuaserver.com:48010
+//  1 | ns=3;s=AirConditioner_1.Humidity 
+//	1 | ns=3;s=AirConditioner_1.Temperature
+	0 | ns=3;s=AirConditioner_1.Humidity | Humidity
+	0 | ns=3;s=AirConditioner_1.Temperature | Temperature
+//	0 | ns=3;s=AirConditioner_1.PowerConsumption
+// World Temperature Server    
+ 	1 | opc.tcp://opcuaserver.com:48484
+ 	1 | ns=1;s=Countries.AT.Mödling.Temperature | Temp | Mödling
+ 	1 | ns=1;s=Countries.AT.Mödling.WindSpeed   | Wind | Mödling
+ 	1 | ns=1;s=Countries.DE.DEHH068.Temperature | Temp | Hamburg
+ 	1 | ns=1;s=Countries.DE.DEHH068.WindSpeed   | Wind | Hamburg
+] 
+(delimiter is '|') WHERE NOT %QueryOPC LIKE '//*';  // ignore commented lines within inline table
+
+LET vCustomFieldList = '';
+LET vCustomFieldListFix = '';
+FOR v = 1 TO NoOfFields('OPC_UA_Config')
+	LET vField = FieldName(v, 'OPC_UA_Config');
+    IF (NOT vField LIKE '%*') THEN 
+        LET vCustomFieldList = vCustomFieldList & ',[$(vField)]';
+        LET vCustomFieldListFix = vCustomFieldListFix & ',If(Len([$(vField)]),[$(vField)]) AS [$(vField)]';
+    ENDIF
+NEXT v
+IF Len(vCustomFieldList)=0 THEN
+  TRACE "No custom dimension fields configured.";
+ELSE  
+  TRACE "Custom dimension fields $(vCustomFieldList)";
+ENDIF
+
+
+OPC_UA_Data_tmp:
+LOAD RowNo() AS %TmpKey, %Param RESIDENT OPC_UA_Config WHERE %QueryOPC;
+
+// Send column "%Param" to Server-side Extension OPC_UA_Config. The result is in "Field1"
+// and it is an xml tree of the response object of the OPC-UA server. This response
+// is placed within a root xml entry "<res>" and a <qliktime> entry is added, too
+LEFT JOIN (OPC_UA_Data_tmp)
+LOAD 
+  // JOIN ON %TmpKey
+	RowNo() AS %TmpKey,
+    '<res><qliktime>$(vNow)</qliktime>' & Field1 & '</res>' AS xml
+EXTENSION node_sse.OPCUA_Read(OPC_UA_Data_tmp {%Param});
+
+
+// interpret the field "xml" as XML and parse values into columns
+OPC_UA_Data_parsed:
+LOAD
+    qliktime,
+    server,
+    nodeid,    
+    // values when row is nodeid data
+    "value/value" AS value.value,    
+    "value/dataType" AS value.dataType,
+    "value/arrayType" AS value.arrayType,
+    "statusCode/value" AS statusCode.value,
+    sourcePicoseconds,
+    serverPicoseconds,    
+    // values when row is server urn
+    applicationUri,
+    productUri,
+    applicationType,
+    discoveryUrls,
+    "applicationName/locale" AS applicationName.locale,
+    "applicationName/text" AS applicationName.text
+FROM_FIELD (OPC_UA_Data_tmp, xml) (XmlSimple, table is res);
+
+DROP TABLE OPC_UA_Data_tmp;
+
+// If existing, add previous data
+IF Len(FileTime(vLocalCacheFile))=0 THEN
+    TRACE [No previous records found in $(vLocalCacheFile)];
+ELSE
+    TRACE [Loading previous records from $(vLocalCacheFile)];
+	CONCATENATE (OPC_UA_Data_parsed) 
+    LOAD * FROM [$(vLocalCacheFile)] (txt, utf8, embedded labels, delimiter is '\t', msq);
+END IF
+
+
+STORE OPC_UA_Data_parsed INTO [$(vLocalCacheFile)] (txt, delimiter is '\t');
+
+
+SET vValueField = value.value;
+
+
+LET vIfCond = '';
+LET vPivot = '';
+FOR v = 1 TO FieldValueCount('%QlikFieldName');
+	LET vQlikFieldName = FieldValue('%QlikFieldName', v);
+    IF Len(vQlikFieldName) THEN
+        LET vIfCond = vIfCond //If(Len(vIfCond), vIfCond & ',') 
+          & ',If(%QlikFieldName=''$(vQlikFieldName)'',%Param) AS [$(vQlikFieldName).nodeid]' & CHR(10);
+        TRACE Rules for "$(vQlikFieldName)" ...;
+        LET vPivot = vPivot  //If(Len(vPivot), vPivot & ',') 
+             & ',Only(If([$(vQlikFieldName).nodeid]=nodeid,[$(vValueField)])) AS [$(vQlikFieldName)]' & CHR(10);
+    END IF
+NEXT v
+
+LET vRowsBefore = NoOfRows('OPC_UA_Data_parsed');
+//TRACE DataRows: $(vRowsBefore);
+
+LEFT JOIN (OPC_UA_Data_parsed)
+LOAD 
+	// JOIN ON
+    %Param AS nodeid
+    // Add fields
+    ,%QlikFieldName
+    $(vCustomFieldListFix)  // syntax checker doesn't like this line but it is okay
+    $(vIfCond)   
+RESIDENT
+   OPC_UA_Config;
+
+DROP TABLE OPC_UA_Config;
+
+LET vRowsAfter = NoOfRows('OPC_UA_Data_parsed');   
+IF vRowsAfter <> vRowsBefore THEN
+	[Error: Table OPC_UA_Data_parsed exploded at LEFT JOIN from $(vRowsBefore) to $(vRowsAfter) rows.];
+END IF
+
+
+IF LEN(vPivot) THEN
+
+  OPC_UA_Data_final:
+  NOCONCATENATE LOAD
+    // GROUP BY
+      qliktime
+      ,server
+      $(vCustomFieldList)   // syntax checker doesn't like this line but it is okay
+    // Aggregated fields      
+      ,Concat(nodeid, '|') AS nodeid
+      $(vPivot)
+  RESIDENT 
+      OPC_UA_Data_parsed
+  WHERE 
+      Len([$(vValueField)])
+  GROUP BY
+      qliktime, server $(vCustomFieldList);
+
+  DROP TABLE OPC_UA_Data_parsed;
+  
+END IF    
+
+LET vRowsAfter = NoOfRows('OPC_UA_Data_final');   
+TRACE DataRows pivoted: $(vRowsAfter);
+
+
+
+
