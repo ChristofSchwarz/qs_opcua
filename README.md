@@ -20,7 +20,7 @@ npm install --save
  * this will download lots of depending modules into a subfolder node_modules
  * go to QMC and into section "Analytical connections" and enter the following: 
  !["screenshot"](https://github.com/ChristofSchwarz/pics/raw/master/2019-12-27%2012_22_03-qmi-qs-sn%20%5BRunning%5D%20-%20Oracle%20VM%20VirtualBox.png)
- * you can run the NodeJS app once with command 
+ * you can run the NodeJS app (the "server-side extension") once with command 
 ```
 node index.js
 ```
@@ -28,7 +28,8 @@ node index.js
 ```
 node install_as_service.js
 ```
- * run "node uninstall_as_service.js" to remove the service again. 
+ * (to uninstall, run "node uninstall_as_service.js" to remove the service again.)
+ * the Server-Side Extension should run before the Qlik Engine Service starts. Althought the Qlik Server will detect changes in the QMC regarding "Analytical connections" and register the server-side extension to the Engine automatically at some point, you can shortcut this by *restarting the Qlik Engine Windows Service* manually (if you have active user sessions, such will have a short interruption and have to refresh their browsers)
  
 ## How to load data from an app
 
