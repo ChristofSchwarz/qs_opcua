@@ -77,13 +77,14 @@ function console_log (arg) {
             result = depromisify(session.readVariableValue(nodeId));
             // stringifying and parsing the result removes schema entries and returns a simpler result
             result = JSON.parse(JSON.stringify(result)); 
-            result.server = opcServer;
-            result.nodeid = nodeId;
+            //result.server = opcServer;
+            //result.nodeid = nodeId;
             console_log(result);
           }
+		  // send back 3 columns, the response object stringified as XML, the opcServer and nodeId
           rows.push({
              //duals: [{ strData: JSON.stringify(result) }]
-             duals: [{ strData: XML_stringify(result) }]
+             duals: [{ strData: XML_stringify(result) }, { strData: opcServer}, {strData: nodeId}]
            });
         });
         console_log('Closing connection to ' + opcServer);
