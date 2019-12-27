@@ -1,5 +1,5 @@
 
-LET vLocalCacheFile = 'lib://tmp/opcua-data.txt';
+LET vLocalCacheFile = 'lib://tmp (qmi-qs-sn_vagrant)/opcua-data.txt';
 LET vNow = Date(Now(),'YYYY-MM-DD hh:mm:ss');
 
 // Find a list of sandbox OPC-UA servers at
@@ -8,6 +8,11 @@ LET vNow = Date(Now(),'YYYY-MM-DD hh:mm:ss');
 // Use an online OPC-UA client to connect and see the possible NodeIDs at
 // https://uaclient.com
 
+// to ignore a config line in below table, start it with // (double-slash, like a comment)
+// The flag %QueryOPC in the config table means
+// 1 ... to query the OPC-UA server during this reload
+// 0 ... no not query the OPC-UA server but load history from tmp and create the field structure 
+//       for the UI
 
 OPC_UA_Config: 
 //  CONFIG FOR OPC-UA SERVER AND NODEID     
@@ -28,6 +33,7 @@ LOAD * INLINE [%QueryOPC | %Param | %QlikFieldName | City
 ] 
 (delimiter is '|') WHERE NOT %QueryOPC LIKE '//*';  // ignore commented lines within inline table
 
+// Prepare some field lists in variables to traverse the loaded result later
 LET vCustomFieldList = '';
 LET vCustomFieldListFix = '';
 FOR v = 1 TO NoOfFields('OPC_UA_Config')
@@ -47,23 +53,35 @@ ENDIF
 OPC_UA_Data_tmp:
 LOAD RowNo() AS %TmpKey, %Param RESIDENT OPC_UA_Config WHERE %QueryOPC;
 
-// Send column "%Param" to Server-side Extension OPC_UA_Config. The result is in "Field1"
-// and it is an xml tree of the response object of the OPC-UA server. This response
-// is placed within a root xml entry "<res>" and a <qliktime> entry is added, too
+// Send column "%Param" to Server-side Extension OPC_UA_Config. The result are 3 columns
+// Field1 ... is an xml tree of the response object of the OPC-UA server
+// Field2 ... is the current OPC-UA server name
+// Field3 ... is the current NodeId
+// All three response fields are put into a field "xml" and placed within a root xml entry  
+// <root>, current time is added into the <meta> tag, too
+
 LEFT JOIN (OPC_UA_Data_tmp)
 LOAD 
   // JOIN ON %TmpKey
 	RowNo() AS %TmpKey,
-    '<res><qliktime>$(vNow)</qliktime>' & Field1 & '</res>' AS xml
+    Field1,
+    Field2,
+    Field3,
+    '<root>'
+      & Field1 & '
+      <meta qliktime="$(vNow)" server="' & Field2 & '" nodeid="' & Field3 & '"/>
+    </root>' AS xml
 EXTENSION node_sse.OPCUA_Read(OPC_UA_Data_tmp {%Param});
 
+LET vRowsAfter = NoOfRows('OPC_UA_Data_tmp');
+TRACE [$(vRowsAfter) rows received from Server-Side Extension node_sse.OPCUA_Read];
 
 // interpret the field "xml" as XML and parse values into columns
 OPC_UA_Data_parsed:
 LOAD
-    qliktime,
-    server,
-    nodeid,    
+    "meta/qliktime" AS qliktime,
+    "meta/server" AS server,
+    "meta/nodeid" AS nodeid,    
     // values when row is nodeid data
     "value/value" AS value.value,    
     "value/dataType" AS value.dataType,
@@ -78,7 +96,7 @@ LOAD
     discoveryUrls,
     "applicationName/locale" AS applicationName.locale,
     "applicationName/text" AS applicationName.text
-FROM_FIELD (OPC_UA_Data_tmp, xml) (XmlSimple, table is res);
+FROM_FIELD (OPC_UA_Data_tmp, xml) (XmlSimple, table is root);
 
 DROP TABLE OPC_UA_Data_tmp;
 
@@ -157,7 +175,3 @@ END IF
 
 LET vRowsAfter = NoOfRows('OPC_UA_Data_final');   
 TRACE DataRows pivoted: $(vRowsAfter);
-
-
-
-
